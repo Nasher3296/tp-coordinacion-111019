@@ -134,6 +134,7 @@ loop:
 }
 
 func (gateway *Gateway) handleClientResponse(msg middleware.Message, ack func(), nack func()) {
+	slog.Info("Received message from output queue", "msg", msg.Body)
 	clientIndex := -1
 
 	gateway.registry.WithLock(func(clients []clientregistry.ClientState) {

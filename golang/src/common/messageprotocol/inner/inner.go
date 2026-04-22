@@ -3,68 +3,105 @@ package inner
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
 )
 
-func serializeJson(message []interface{}) ([]byte, error) {
-	return json.Marshal(message)
+type PipelineMsg struct {
+	ClientID      int
+	Records       []fruititem.FruitItem
+	ExpectedCount uint64
 }
 
-func deserializeJson(message []byte) ([]interface{}, error) {
-	var data []interface{}
-	if err := json.Unmarshal(message, &data); err != nil {
-		return nil, err
-	}
-	return data, nil
+func (m PipelineMsg) IsEOF() bool { return len(m.Records) == 0 }
+
+type pipelineWire struct {
+	ClientID      int     `json:"cid"`
+	Records       [][]any `json:"records"`
+	ExpectedCount uint64  `json:"expected,omitempty"`
 }
 
-func SerializeMessage(fruitRecords []fruititem.FruitItem) (*middleware.Message, error) {
-	data := []interface{}{}
-	for _, fruitRecord := range fruitRecords {
-		datum := []interface{}{
-			fruitRecord.Fruit,
-			fruitRecord.Amount,
-		}
-		data = append(data, datum)
+func SerializePipeline(m PipelineMsg) (*middleware.Message, error) {
+	records := make([][]any, len(m.Records))
+	for i, r := range m.Records {
+		records[i] = []any{r.Fruit, r.Amount}
 	}
-
-	body, err := serializeJson(data)
+	body, err := json.Marshal(pipelineWire{
+		ClientID:      m.ClientID,
+		Records:       records,
+		ExpectedCount: m.ExpectedCount,
+	})
 	if err != nil {
 		return nil, err
 	}
-	message := middleware.Message{Body: string(body)}
-
-	return &message, nil
+	return &middleware.Message{Body: string(body)}, nil
 }
 
-func DeserializeMessage(message *middleware.Message) ([]fruititem.FruitItem, bool, error) {
-	data, err := deserializeJson([]byte((*message).Body))
+func DeserializePipeline(msg *middleware.Message) (PipelineMsg, error) {
+	var w pipelineWire
+	if err := json.Unmarshal([]byte(msg.Body), &w); err != nil {
+		return PipelineMsg{}, err
+	}
+	records := make([]fruititem.FruitItem, len(w.Records))
+	for i, r := range w.Records {
+		if len(r) != 2 {
+			return PipelineMsg{}, fmt.Errorf("record %d: expected [fruit, amount], got %d elements", i, len(r))
+		}
+		fruit, ok := r[0].(string)
+		if !ok {
+			return PipelineMsg{}, errors.New("record fruit is not a string")
+		}
+		amount, ok := r[1].(float64)
+		if !ok {
+			return PipelineMsg{}, errors.New("record amount is not a number")
+		}
+		records[i] = fruititem.FruitItem{Fruit: fruit, Amount: uint32(amount)}
+	}
+	return PipelineMsg{
+		ClientID:      w.ClientID,
+		Records:       records,
+		ExpectedCount: w.ExpectedCount,
+	}, nil
+}
+
+type CoordKind string
+
+const (
+	CountQuery CoordKind = "count_query"
+	CountReply CoordKind = "count_reply"
+	Confirm    CoordKind = "confirm"
+)
+
+type CoordMsg struct {
+	ClientID int       `json:"cid"`
+	Kind     CoordKind `json:"kind"`
+	CoordID  int       `json:"coord,omitempty"`
+	SenderID int       `json:"sender,omitempty"`
+	Round    int       `json:"round,omitempty"`
+	Count    uint64    `json:"count,omitempty"`
+}
+
+func SerializeCoord(m CoordMsg) (*middleware.Message, error) {
+	body, err := json.Marshal(CoordMsg{
+		ClientID: m.ClientID,
+		Kind:     m.Kind,
+		CoordID:  m.CoordID,
+		SenderID: m.SenderID,
+		Round:    m.Round,
+		Count:    m.Count,
+	})
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
+	return &middleware.Message{Body: string(body)}, nil
+}
 
-	fruitRecords := []fruititem.FruitItem{}
-	for _, datum := range data {
-		fruitPair, ok := datum.([]interface{})
-		if !ok {
-			return nil, false, errors.New("Datum is not an array")
-		}
-
-		fruit, ok := fruitPair[0].(string)
-		if !ok {
-			return nil, false, errors.New("Datum is not a (fruit, amount) pair")
-		}
-
-		fruitAmount, ok := fruitPair[1].(float64)
-		if !ok {
-			return nil, false, errors.New("Datum is not a (fruit, amount) pair")
-		}
-
-		fruitRecord := fruititem.FruitItem{Fruit: fruit, Amount: uint32(fruitAmount)}
-		fruitRecords = append(fruitRecords, fruitRecord)
+func DeserializeCoord(msg *middleware.Message) (CoordMsg, error) {
+	var w CoordMsg
+	if err := json.Unmarshal([]byte(msg.Body), &w); err != nil {
+		return CoordMsg{}, err
 	}
-
-	return fruitRecords, len(fruitRecords) == 0, nil
+	return w, nil
 }

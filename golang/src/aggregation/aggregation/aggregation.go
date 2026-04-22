@@ -3,7 +3,10 @@ package aggregation
 import (
 	"fmt"
 	"log/slog"
+	"os"
+	"os/signal"
 	"sort"
+	"syscall"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
@@ -23,10 +26,12 @@ type AggregationConfig struct {
 }
 
 type Aggregation struct {
-	outputQueue   middleware.Middleware
-	inputExchange middleware.Middleware
-	fruitItemMap  map[string]fruititem.FruitItem
+	sumAmount     int
 	topSize       int
+	outputQueue   middleware.Middleware
+	inputQueue    middleware.Middleware
+	clientsFruits map[int]map[string]fruititem.FruitItem
+	clientsEOF    map[int]int
 }
 
 func NewAggregation(config AggregationConfig) (*Aggregation, error) {
@@ -37,91 +42,114 @@ func NewAggregation(config AggregationConfig) (*Aggregation, error) {
 		return nil, err
 	}
 
-	inputExchangeRoutingKey := []string{fmt.Sprintf("%s_%d", config.AggregationPrefix, config.Id)}
-	inputExchange, err := middleware.CreateExchangeMiddleware(config.AggregationPrefix, inputExchangeRoutingKey, connSettings)
+	inputQueue, err := middleware.CreateQueueMiddleware(fmt.Sprintf("%s_%d", config.AggregationPrefix, config.Id), connSettings)
 	if err != nil {
 		outputQueue.Close()
 		return nil, err
 	}
 
 	return &Aggregation{
-		outputQueue:   outputQueue,
-		inputExchange: inputExchange,
-		fruitItemMap:  map[string]fruititem.FruitItem{},
+		sumAmount:     config.SumAmount,
 		topSize:       config.TopSize,
+		outputQueue:   outputQueue,
+		inputQueue:    inputQueue,
+		clientsFruits: map[int]map[string]fruititem.FruitItem{},
+		clientsEOF:    map[int]int{},
 	}, nil
 }
 
-func (aggregation *Aggregation) Run() {
-	aggregation.inputExchange.StartConsuming(func(msg middleware.Message, ack, nack func()) {
-		aggregation.handleMessage(msg, ack, nack)
-	})
+func (a *Aggregation) Run() {
+	go a.handleSignals()
+	defer a.close()
+
+	if err := a.inputQueue.StartConsuming(func(msg middleware.Message, ack, nack func()) {
+		a.handleMessage(msg, ack, nack)
+	}); err != nil {
+		slog.Error("While consuming from input exchange", "err", err)
+	}
 }
 
-func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func(), nack func()) {
-	defer ack()
+func (a *Aggregation) handleSignals() {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	<-signals
+	slog.Info("SIGTERM signal received, stopping consumer")
+	a.inputQueue.StopConsuming()
+}
 
-	fruitRecords, isEof, err := inner.DeserializeMessage(&msg)
+func (a *Aggregation) close() {
+	a.inputQueue.Close()
+	a.outputQueue.Close()
+}
+
+func (a *Aggregation) handleMessage(msg middleware.Message, ack func(), nack func()) {
+	defer ack()
+	slog.Info("Received message", "msg", msg.Body)
+
+	m, err := inner.DeserializePipeline(&msg)
 	if err != nil {
 		slog.Error("While deserializing message", "err", err)
 		return
 	}
 
-	if isEof {
-		if err := aggregation.handleEndOfRecordsMessage(); err != nil {
-			slog.Error("While handling end of record message", "err", err)
+	if m.IsEOF() {
+		if err := a.handleEOF(m.ClientID); err != nil {
+			slog.Error("While handling EOF", "err", err, "cid", m.ClientID)
 		}
 		return
 	}
 
-	aggregation.handleDataMessage(fruitRecords)
+	a.handleDataMessage(m.ClientID, m.Records)
 }
 
-func (aggregation *Aggregation) handleEndOfRecordsMessage() error {
-	slog.Info("Received End Of Records message")
-
-	fruitTopRecords := aggregation.buildFruitTop()
-	message, err := inner.SerializeMessage(fruitTopRecords)
-	if err != nil {
-		slog.Debug("While serializing top message", "err", err)
-		return err
-	}
-	if err := aggregation.outputQueue.Send(*message); err != nil {
-		slog.Debug("While sending top message", "err", err)
-		return err
+func (a *Aggregation) handleEOF(clientID int) error {
+	a.clientsEOF[clientID]++
+	if a.clientsEOF[clientID] < a.sumAmount {
+		return nil
 	}
 
-	eofMessage := []fruititem.FruitItem{}
-	message, err = inner.SerializeMessage(eofMessage)
+	slog.Info("All Sums reported EOF, emitting top", "cid", clientID)
+
+	topMsg, err := inner.SerializePipeline(inner.PipelineMsg{
+		ClientID: clientID,
+		Records:  a.buildFruitTop(clientID),
+	})
 	if err != nil {
-		slog.Debug("While serializing EOF message", "err", err)
-		return err
+		return fmt.Errorf("serializing top for client %d: %w", clientID, err)
 	}
-	if err := aggregation.outputQueue.Send(*message); err != nil {
-		slog.Debug("While sending EOF message", "err", err)
-		return err
+	if err := a.outputQueue.Send(*topMsg); err != nil {
+		return fmt.Errorf("sending top for client %d: %w", clientID, err)
 	}
+
+	delete(a.clientsFruits, clientID)
+	delete(a.clientsEOF, clientID)
 	return nil
 }
 
-func (aggregation *Aggregation) handleDataMessage(fruitRecords []fruititem.FruitItem) {
-	for _, fruitRecord := range fruitRecords {
-		if _, ok := aggregation.fruitItemMap[fruitRecord.Fruit]; ok {
-			aggregation.fruitItemMap[fruitRecord.Fruit] = aggregation.fruitItemMap[fruitRecord.Fruit].Sum(fruitRecord)
+func (a *Aggregation) handleDataMessage(clientID int, fruitRecords []fruititem.FruitItem) {
+	fruits, ok := a.clientsFruits[clientID]
+	if !ok {
+		fruits = map[string]fruititem.FruitItem{}
+		a.clientsFruits[clientID] = fruits
+	}
+	for _, record := range fruitRecords {
+		if fruit, ok := fruits[record.Fruit]; ok {
+			fruits[record.Fruit] = fruit.Sum(record)
 		} else {
-			aggregation.fruitItemMap[fruitRecord.Fruit] = fruitRecord
+			fruits[record.Fruit] = record
 		}
 	}
 }
 
-func (aggregation *Aggregation) buildFruitTop() []fruititem.FruitItem {
-	fruitItems := make([]fruititem.FruitItem, 0, len(aggregation.fruitItemMap))
-	for _, item := range aggregation.fruitItemMap {
+func (a *Aggregation) buildFruitTop(clientID int) []fruititem.FruitItem {
+	fruits := a.clientsFruits[clientID]
+	fruitItems := make([]fruititem.FruitItem, 0, len(fruits))
+	for _, item := range fruits {
 		fruitItems = append(fruitItems, item)
 	}
 	sort.SliceStable(fruitItems, func(i, j int) bool {
 		return fruitItems[j].Less(fruitItems[i])
 	})
-	finalTopSize := min(aggregation.topSize, len(fruitItems))
+	finalTopSize := min(a.topSize, len(fruitItems))
 	return fruitItems[:finalTopSize]
 }
