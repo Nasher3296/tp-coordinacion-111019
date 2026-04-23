@@ -42,7 +42,6 @@ type Sum struct {
 	aggregationAmount int
 	aggregationPrefix string
 	mu                sync.Mutex
-	sendMu            sync.Mutex
 	inputQueue        middleware.Middleware
 	outputQueues      []middleware.Middleware
 	coordInQueue      middleware.Middleware
@@ -369,8 +368,6 @@ func (s *Sum) sendCountQuery(clientID, round int) {
 		slog.Error("Serializing count query", "err", err, "cid", clientID, "round", round)
 		return
 	}
-	s.sendMu.Lock()
-	defer s.sendMu.Unlock()
 	for i, queue := range s.coordOutQueues {
 		if i == s.id {
 			continue
@@ -394,8 +391,6 @@ func (s *Sum) sendCountReply(coordID, clientID, round int, count uint64) {
 		slog.Error("Serializing count reply", "err", err, "cid", clientID)
 		return
 	}
-	s.sendMu.Lock()
-	defer s.sendMu.Unlock()
 	if err := s.coordOutQueues[coordID].Send(*reply); err != nil {
 		slog.Error("Sending count reply", "err", err, "cid", clientID, "to", coordID)
 	}
@@ -411,8 +406,6 @@ func (s *Sum) sendConfirm(clientID int) {
 		slog.Error("Serializing confirm", "err", err, "cid", clientID)
 		return
 	}
-	s.sendMu.Lock()
-	defer s.sendMu.Unlock()
 	for i, queue := range s.coordOutQueues {
 		if i == s.id {
 			continue
