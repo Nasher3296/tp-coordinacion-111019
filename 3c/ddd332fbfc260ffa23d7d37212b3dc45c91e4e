@@ -1,0 +1,31 @@
+golang/src/sum/sum/sum.go
+  c2160bbabea45f3f 45,372-373,397-398,414-415
+README.md
+  c2160bbabea45f3f 100
+  h_71f5703dce4fc5 99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "3cddd332fbfc260ffa23d7d37212b3dc45c91e4e",
+  "prompts": {
+    "c2160bbabea45f3f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "54333c63-fcc1-447d-a3fb-a6bc0ded2441",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Nasher3296",
+      "messages": [],
+      "total_additions": 9,
+      "total_deletions": 0,
+      "accepted_lines": 8,
+      "overriden_lines": 1
+    }
+  },
+  "humans": {
+    "h_71f5703dce4fc5": {
+      "author": "Nasher3296"
+    }
+  }
+}
