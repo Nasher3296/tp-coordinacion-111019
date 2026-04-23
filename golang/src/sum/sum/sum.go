@@ -43,7 +43,7 @@ type Sum struct {
 	aggregationPrefix string
 	mu                sync.Mutex
 	inputQueue        middleware.Middleware
-	outputQueues   []middleware.Middleware
+	outputQueues      []middleware.Middleware
 	coordInQueue      middleware.Middleware
 	coordOutQueues    []middleware.Middleware
 	clientsState      map[int]*clientState
@@ -105,7 +105,7 @@ func NewSum(config SumConfig) (*Sum, error) {
 		aggregationAmount: config.AggregationAmount,
 		aggregationPrefix: config.AggregationPrefix,
 		inputQueue:        inputQueue,
-		outputQueues:   outputQueues,
+		outputQueues:      outputQueues,
 		coordInQueue:      coordInQueue,
 		coordOutQueues:    coordOutQueues,
 		clientsState:      map[int]*clientState{},
@@ -120,7 +120,7 @@ func (s *Sum) Run() {
 		if err := s.coordInQueue.StartConsuming(func(msg middleware.Message, ack, _ func()) {
 			s.handleCoord(msg, ack)
 		}); err != nil {
-			slog.Error("While consuming from coord input exchange", "err", err)
+			slog.Error("While consuming from coord input queue", "err", err)
 		}
 	}()
 
@@ -142,12 +142,12 @@ func (s *Sum) handleSignals() {
 
 func (s *Sum) close() {
 	s.inputQueue.Close()
-	for _, ex := range s.outputQueues {
-		ex.Close()
+	for _, queue := range s.outputQueues {
+		queue.Close()
 	}
 	s.coordInQueue.Close()
-	for _, ex := range s.coordOutQueues {
-		ex.Close()
+	for _, queue := range s.coordOutQueues {
+		queue.Close()
 	}
 }
 
@@ -238,7 +238,7 @@ func (s *Sum) handleCoord(msg middleware.Message, ack func()) {
 	case inner.Confirm:
 		s.handleConfirm(m)
 	default:
-		slog.Warn("Unexpected kind on coord exchange", "kind", m.Kind)
+		slog.Warn("Unexpected kind on coord queue", "kind", m.Kind)
 	}
 }
 
@@ -368,11 +368,11 @@ func (s *Sum) sendCountQuery(clientID, round int) {
 		slog.Error("Serializing count query", "err", err, "cid", clientID, "round", round)
 		return
 	}
-	for i, ex := range s.coordOutQueues {
+	for i, queue := range s.coordOutQueues {
 		if i == s.id {
 			continue
 		}
-		if err := ex.Send(*query); err != nil {
+		if err := queue.Send(*query); err != nil {
 			slog.Error("Sending count query", "err", err, "cid", clientID, "round", round, "to", i)
 		}
 	}
@@ -406,11 +406,11 @@ func (s *Sum) sendConfirm(clientID int) {
 		slog.Error("Serializing confirm", "err", err, "cid", clientID)
 		return
 	}
-	for i, ex := range s.coordOutQueues {
+	for i, queue := range s.coordOutQueues {
 		if i == s.id {
 			continue
 		}
-		if err := ex.Send(*confirm); err != nil {
+		if err := queue.Send(*confirm); err != nil {
 			slog.Error("Sending confirm", "err", err, "cid", clientID, "to", i)
 		}
 	}
@@ -435,8 +435,8 @@ func (s *Sum) flushClient(clientID int, data map[string]fruititem.FruitItem) err
 	if err != nil {
 		return fmt.Errorf("serializing EOF for client %d: %w", clientID, err)
 	}
-	for i, ex := range s.outputQueues {
-		if err := ex.Send(*eofMsg); err != nil {
+	for i, queue := range s.outputQueues {
+		if err := queue.Send(*eofMsg); err != nil {
 			return fmt.Errorf("publishing EOF for client %d to aggregator %d: %w", clientID, i, err)
 		}
 	}
