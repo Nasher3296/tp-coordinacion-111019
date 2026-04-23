@@ -1,0 +1,14 @@
+golang/src/sum/sum/sum.go
+  h_71f5703dce4fc5 123,145-146,149-150,241,371,375,409,413,438-439
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "e5ec0186f93323b7d20c4c7bd5287f2d18a99b8a",
+  "prompts": {},
+  "humans": {
+    "h_71f5703dce4fc5": {
+      "author": "Nasher3296"
+    }
+  }
+}
